@@ -2,6 +2,7 @@ import os
 import warnings
 import logging
 import sys
+import json
 from typing import Optional
 import requests
 from langflow.load import run_flow_from_json
@@ -53,7 +54,7 @@ def run_flow(message: str,
              input_type: str = "chat",
              tweaks: Optional[dict] = None,
              application_token: Optional[str] = None,
-             session_id: Optional[str] = None) -> dict:
+             session_id: Optional[str] = None) -> requests.Response:
     """
     Run a flow with a given message and optional tweaks.
 
@@ -65,7 +66,7 @@ def run_flow(message: str,
     if LANGFLOW_FLOW_ID:
         api_url = f"{LANGFLOW_BASE_API_URL}/lf/{LANGFLOW_FLOW_ID}/api/v1/run/{endpoint}"
     else:
-        api_url = f"{LANGFLOW_BASE_API_URL}/api/v1/run"
+        api_url = f"{LANGFLOW_BASE_API_URL}/api/v1/run/{endpoint}"
 
     payload = {
         "input_value": message,
@@ -79,7 +80,8 @@ def run_flow(message: str,
     if application_token:
         headers = {"Authorization": "Bearer " + application_token, "Content-Type": "application/json"}
     response = requests.post(api_url, json=payload, headers=headers, timeout=30)
-    return response.json()
+    response.raise_for_status()
+    return response
 
 
 def get_response(user_input):
@@ -121,7 +123,7 @@ def get_response_from_api(user_input, session_id=CHAT_SESSION_ID):
     Returns:
         str: The response from the flow.
     """
-    result = run_flow(
+    response = run_flow(
         message=user_input,
         endpoint=LANGFLOW_FLOW_ENDPOINT,
         tweaks=TWEAKS,
@@ -129,18 +131,25 @@ def get_response_from_api(user_input, session_id=CHAT_SESSION_ID):
         application_token=LANGFLOW_APPLICATION_TOKEN,
     )
 
-    # Extract the "Chat Output" message
-    chat_output_message = result['outputs'][0]['outputs'][0]['messages'][0]['message']
-
-    return chat_output_message
+    # Stream the response
+    for line in response.iter_lines():
+        if line:
+            try:
+                result = json.loads(line.decode('utf-8'))
+                # Extract the "Chat Output" message
+                chat_output_message = result['outputs'][0]['outputs'][0]['messages'][0]['message']
+                yield chat_output_message
+            except (ValueError, KeyError, IndexError) as e:
+                logging.error(f"Error processing line: {e}")
 
 
 def main():
     if len(sys.argv) > 1:
         # If a query is provided as a command-line argument, process it and print the response
         query = ' '.join(sys.argv[1:])
-        response = get_response_from_api(query, session_id="ZAstraO_Bot")
-        print(response)
+        for response in get_response_from_api(query, session_id="ZAstraO_Bot"):
+            print(response, end='', flush=True)
+        print()  # Print a newline after the streaming is done
     else:
         # If no arguments are provided, run the interactive mode
         print("Welcome to the Zoom AI Bot. Type 'exit' to quit.")
@@ -149,8 +158,10 @@ def main():
             if user_input.lower() == 'exit':
                 print("Goodbye!")
                 break
-            response = get_response_from_api(user_input)
-            print(f"{Fore.GREEN}Bot: {Fore.CYAN}{response}{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}Bot: {Fore.CYAN}", end='', flush=True)
+            for response in get_response_from_api(user_input, session_id=CHAT_SESSION_ID):
+                print(response, end='', flush=True)
+            print(Style.RESET_ALL)  # Reset the style after the streaming is done
 
 if __name__ == "__main__":
     main()
